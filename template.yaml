@@ -1,0 +1,348 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+    LambdaFunction:
+        Type: "AWS::Lambda::Function"
+        Properties:
+            Code:
+                S3Bucket: urlshortener-bucket
+                S3Key: lambda_function_v5.zip
+            FunctionName:
+                Ref: LambdaFuncName
+            Handler: lambda_function.lambda_handler
+            Runtime: python3.10
+            Role: !GetAtt IAMRole.Arn
+            Environment:
+                Variables:
+                    DYNAMODB_TBL_NAME:
+                        Ref: DynamoDBTableName
+                    ENV_NAME:
+                        Ref: EnvironmentName
+        DependsOn:
+            - DynamoDBTable
+    DynamoDBTable:
+        Type: "AWS::DynamoDB::Table"
+        Properties:
+            TableName:
+                Ref: DynamoDBTableName
+            AttributeDefinitions:
+                - AttributeName: apiKey
+                  AttributeType: S
+                - AttributeName: shortLinkId
+                  AttributeType: S
+            KeySchema:
+                - AttributeName: apiKey
+                  KeyType: HASH
+                - AttributeName: shortLinkId
+                  KeyType: RANGE
+            ProvisionedThroughput:
+                ReadCapacityUnits: "5"
+                WriteCapacityUnits: "5"
+        DependsOn:
+            - IAMRole
+    # API Gateway API
+    APIGatewayRestAPI:
+        Type: "AWS::ApiGateway::RestApi"
+        Properties:
+            Name:
+                Ref: APIName
+        DependsOn:
+            - LambdaFunction
+    APIUsagePlan:
+        Type: AWS::ApiGateway::UsagePlan
+        Properties:
+            UsagePlanName: cf-link-shortener-plan
+            Description: "cf-link-shortener-plan"
+            Quota:
+                Limit: 100
+                Period: DAY
+            Throttle:
+                BurstLimit: 11
+                RateLimit: 10
+            ApiStages:
+                - ApiId:
+                      Ref: APIGatewayRestAPI
+                  Stage: "Prod"
+        DependsOn:
+            - APIGatewayRestAPI
+            - APIGatewayDeployment
+    PostURLModel:
+        Type: "AWS::ApiGateway::Model"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ContentType: application/json
+            Description: For creating new URL
+            Name: PostURLModel
+            Schema:
+                $schema: "http://json-schema.org/draft-04/schema#"
+                title: PostURLModel
+                type: array
+                items:
+                    type: object
+                    properties:
+                        url:
+                            type: string
+        DependsOn:
+            - APIGatewayRestAPI
+    # API Gateway Resources
+    APIResourceURL:
+        Type: "AWS::ApiGateway::Resource"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ParentId: !GetAtt
+                - APIGatewayRestAPI
+                - RootResourceId
+            PathPart: url
+        DependsOn:
+            - APIGatewayRestAPI
+    APIResourceSingleURL:
+        Type: "AWS::ApiGateway::Resource"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ParentId: !Ref APIResourceURL
+            PathPart: "{LinkId}"
+        DependsOn:
+            - APIResourceURL
+    APIResourceURLS:
+        Type: "AWS::ApiGateway::Resource"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ParentId: !GetAtt
+                - APIGatewayRestAPI
+                - RootResourceId
+            PathPart: urls
+        DependsOn:
+            - APIGatewayRestAPI
+    # Redirect Resource
+    APIResourceRedirect:
+        Type: "AWS::ApiGateway::Resource"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ParentId: !GetAtt
+                - APIGatewayRestAPI
+                - RootResourceId
+            PathPart: u
+        DependsOn:
+            - APIGatewayRestAPI
+    APIResourceRedirectTo:
+        Type: "AWS::ApiGateway::Resource"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ParentId: !Ref APIResourceRedirect
+            PathPart: "{LinkId}"
+        DependsOn:
+            - APIResourceRedirect
+    # HTTP Methods for API Gateway resources.
+    APIResourceURLPost:
+        Type: "AWS::ApiGateway::Method"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ResourceId: !Ref APIResourceURL
+            HttpMethod: POST
+            ApiKeyRequired: true
+            AuthorizationType: NONE
+            MethodResponses:
+                - StatusCode: 200
+            Integration:
+                Type: AWS_PROXY
+                IntegrationHttpMethod: POST
+                Uri: !Sub
+                    - >-
+                        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+                    - LambdaFuncNameArn: !GetAtt LambdaFunction.Arn
+        DependsOn:
+            - APIResourceURL
+    APIResourceSingleURLDelete:
+        Type: "AWS::ApiGateway::Method"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ResourceId: !Ref APIResourceSingleURL
+            HttpMethod: DELETE
+            ApiKeyRequired: true
+            AuthorizationType: NONE
+            MethodResponses:
+                - StatusCode: 200
+            Integration:
+                Type: AWS_PROXY
+                IntegrationHttpMethod: POST
+                Uri: !Sub
+                    - >-
+                        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+                    - LambdaFuncNameArn: !GetAtt LambdaFunction.Arn
+        DependsOn:
+            - APIResourceSingleURL
+    APIResourceSingleURLGet:
+        Type: "AWS::ApiGateway::Method"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ResourceId: !Ref APIResourceSingleURL
+            HttpMethod: GET
+            ApiKeyRequired: true
+            AuthorizationType: NONE
+            MethodResponses:
+                - StatusCode: 200
+            Integration:
+                Type: AWS_PROXY
+                IntegrationHttpMethod: POST
+                Uri: !Sub
+                    - >-
+                        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+                    - LambdaFuncNameArn: !GetAtt LambdaFunction.Arn
+        DependsOn:
+            - APIResourceSingleURL
+    APIResourceURLSGet:
+        Type: "AWS::ApiGateway::Method"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ResourceId: !Ref APIResourceURLS
+            HttpMethod: GET
+            ApiKeyRequired: true
+            AuthorizationType: NONE
+            MethodResponses:
+                - StatusCode: 200
+            Integration:
+                Type: AWS_PROXY
+                IntegrationHttpMethod: POST
+                Uri: !Sub
+                    - >-
+                        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+                    - LambdaFuncNameArn: !GetAtt LambdaFunction.Arn
+        DependsOn:
+            - APIResourceSingleURL
+    APIResourceRedirectGET:
+        Type: "AWS::ApiGateway::Method"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            ResourceId: !Ref APIResourceRedirectTo
+            HttpMethod: GET
+            ApiKeyRequired: true
+            AuthorizationType: NONE
+            MethodResponses:
+                - StatusCode: 200
+            Integration:
+                Type: AWS_PROXY
+                IntegrationHttpMethod: POST
+                Uri: !Sub
+                    - >-
+                        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+                    - LambdaFuncNameArn: !GetAtt LambdaFunction.Arn
+        DependsOn:
+            - APIResourceSingleURL
+
+    # FIXME: API not deploying automatically by some reason!
+    APIGatewayDeployment:
+        Type: "AWS::ApiGateway::Deployment"
+        Properties:
+            RestApiId: !Ref APIGatewayRestAPI
+            StageName: "Prod"
+        DependsOn:
+            - APIGatewayRestAPI
+            - PostURLModel
+            - APIResourceURL
+            - APIResourceSingleURL
+            - APIResourceURLS
+            - APIResourceURLPost
+            - APIResourceSingleURLDelete
+            - APIResourceSingleURLGet
+            - APIResourceURLSGet
+    # API Gateway triggers.
+    # TODO: Need better way to create these triggers.
+    lambdaApiGatewayInvoke:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt LambdaFunction.Arn
+            Principal: "apigateway.amazonaws.com"
+            SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayRestAPI}/*/POST/url"
+        DependsOn:
+            - APIGatewayRestAPI
+    lambdaApiGatewayInvoke1:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt LambdaFunction.Arn
+            Principal: "apigateway.amazonaws.com"
+            SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayRestAPI}/*/DELETE/url/{LinkId}"
+        DependsOn:
+            - APIGatewayRestAPI
+    lambdaApiGatewayInvoke2:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt LambdaFunction.Arn
+            Principal: "apigateway.amazonaws.com"
+            SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayRestAPI}/*/GET/url/{LinkId}"
+        DependsOn:
+            - APIGatewayRestAPI
+    lambdaApiGatewayInvoke3:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt LambdaFunction.Arn
+            Principal: "apigateway.amazonaws.com"
+            SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayRestAPI}/*/GET/urls"
+        DependsOn:
+            - APIGatewayRestAPI
+    lambdaApiGatewayInvoke4:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: lambda:InvokeFunction
+            FunctionName: !GetAtt LambdaFunction.Arn
+            Principal: "apigateway.amazonaws.com"
+            SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayRestAPI}/*/GET/u/{LinkId}"
+        DependsOn:
+            - APIGatewayRestAPI
+    # Permission
+    IAMRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                          Service:
+                              - lambda.amazonaws.com
+                      Action:
+                          - "sts:AssumeRole"
+            Path: /
+            Policies:
+                - PolicyName: Policy_api-lambda-db
+                  PolicyDocument:
+                      Version: 2012-10-17
+                      Statement:
+                          - Effect: Allow
+                            Action:
+                                - "dynamodb:BatchGetItem"
+                                - "dynamodb:BatchWriteItem"
+                                - "dynamodb:TagResource"
+                                - "dynamodb:UntagResource"
+                                - "dynamodb:PutItem"
+                                - "dynamodb:DeleteItem"
+                                - "dynamodb:GetItem"
+                                - "dynamodb:Scan"
+                                - "dynamodb:Query"
+                                - "dynamodb:UpdateItem"
+                            Resource: "*"
+                          - Effect: Allow
+                            Action:
+                                - "logs:CreateLogStream"
+                                - "logs:CreateLogGroup"
+                                - "logs:PutLogEvents"
+                            Resource: "*"
+Parameters:
+    EnvironmentName:
+        Type: String
+        Default: Prod
+        AllowedValues:
+            - Prod
+            - Dev
+            - Test
+    LambdaFuncName:
+        Type: String
+        Default: "cf-linkShortener-lambda"
+    DynamoDBTableName:
+        Type: String
+        Default: "cf-linkShortener-table"
+    APIName:
+        Type: String
+        Default: "cf-linkShortener-api"
